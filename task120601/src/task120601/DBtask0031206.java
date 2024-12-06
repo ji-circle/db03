@@ -97,76 +97,126 @@ public class DBtask0031206 {
 	}
 	
 	//2. 책 빌리는 부분 - 학번, isbn 입력받음
-	//  대기 부분은 제외이기에 borrow_queue에 넣는 부분은 제외함
 	private static void borrowBook(Connection conn, Scanner scanner) throws SQLException {
 	    System.out.print("학번: ");
 	    String studentId = scanner.nextLine();
 	    System.out.print("ISBN: ");
 	    String isbn = scanner.nextLine();
 
-	    // 수강생인지 확인 - 아니면 return함
-	    String checkIfTaking = 
-	        "SELECT t.course_id, t.sec_id, t.semester, t.year " +
-	        "FROM takes t JOIN refers ref ON t.course_id = ref.course_id AND t.sec_id = ref.sec_id " + 
-	        "AND t.semester = ref.semester AND t.year = ref.year " +
-	        "WHERE t.ID = ? AND ref.ISBN = ?";
+	    // 1. 수강생 확인
+	    String checkEnrollmentSql = 
+	        "SELECT t.ID FROM takes t " + 
+	        "JOIN refers r ON t.course_id = r.course_id " +
+	        "AND t.sec_id = r.sec_id " + 
+	        "AND t.semester = r.semester " + 
+	        "AND t.year = r.year " +
+	        "WHERE t.ID = ? AND r.ISBN = ?";
 
-	    try (PreparedStatement pstmt = conn.prepareStatement(checkIfTaking)) {
+	    try (PreparedStatement pstmt = conn.prepareStatement(checkEnrollmentSql)) {
 	        pstmt.setString(1, studentId);
 	        pstmt.setString(2, isbn);
 
 	        ResultSet rs = pstmt.executeQuery();
 	        if (!rs.next()) {
 	            System.out.println("대출불허: 해당 도서의 수강생이 아닙니다.");
-	            //리턴해버리기
 	            return;
 	        }
 
-	        // 수강 정보 저장, insert할 때 이것 넣을것임
-	        String courseId = rs.getString("course_id");
-	        String secId = rs.getString("sec_id");
-	        String semester = rs.getString("semester");
-	        int year = rs.getInt("year");
-
-	        // 학생 이름 조회해서 넣기
-	        String getStudentNameSql = "SELECT name FROM student WHERE ID = ?";
-	        try (PreparedStatement studentNameStmt = conn.prepareStatement(getStudentNameSql)) {
-	            studentNameStmt.setString(1, studentId);
-	            ResultSet nameRs = studentNameStmt.executeQuery();
-	            if (nameRs.next()) {
-	                String studentName = nameRs.getString("name");
+	        // 2. 현재 도서의 대출 상태 확인
+	        String checkCurrentBorrowSql = 
+	            "SELECT MAX(return_date) as latest_return FROM borrow_info WHERE ISBN = ?";
+	            
+	        try (PreparedStatement checkStmt = conn.prepareStatement(checkCurrentBorrowSql)) {
+	            checkStmt.setString(1, isbn);
+	            ResultSet borrowRs = checkStmt.executeQuery();
+	            
+	            int borrowDate;
+	            int returnDate;
+	            
+	            if (borrowRs.next() && borrowRs.getInt("latest_return") > Integer.parseInt(String.format("%tY%<tm%<td", new java.util.Date()))) {
+	                // 이미 대출 중인 경우
+	                borrowDate = borrowRs.getInt("latest_return");
+	                returnDate = borrowDate + 7;
 	                
-	                // 대출 정보 입력하는 부분
-	                String borrowSql = 
-	                    "INSERT INTO borrow_info (ISBN, ID, borrow_date, return_date, name, number, course_id, sec_id, semester, year) " +
-	                    "VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)";
+	                // 대기열 번호 확인
+	                String getQueueNumberSql = 
+	                    "SELECT COALESCE(MAX(borr_id), 0) + 1 as next_id FROM borrow_queue WHERE ISBN = ?";
+	                try (PreparedStatement queueStmt = conn.prepareStatement(getQueueNumberSql)) {
+	                    queueStmt.setString(1, isbn);
+	                    ResultSet queueRs = queueStmt.executeQuery();
+	                    int queueNumber = queueRs.next() ? queueRs.getInt("next_id") : 1;
 
-	                try (PreparedStatement borrowStmt = conn.prepareStatement(borrowSql)) {
-	                    int borrowDate = Integer.parseInt(String.format("%tY%<tm%<td", new java.util.Date()));
-	                    int returnDate = borrowDate + 7; // 7일 후 반납하니까 +7함
-
-	                    borrowStmt.setString(1, isbn);
-	                    borrowStmt.setString(2, studentId);
-	                    borrowStmt.setInt(3, borrowDate);
-	                    borrowStmt.setInt(4, returnDate);
-	                    borrowStmt.setString(5, studentName);
-	                    borrowStmt.setString(6, courseId);
-	                    borrowStmt.setString(7, secId);
-	                    borrowStmt.setString(8, semester);
-	                    borrowStmt.setInt(9, year);
-
-	                    int result = borrowStmt.executeUpdate();
-	                    if (result > 0) {
-	                        System.out.println("대출완료");
-	                        System.out.println("대출일: " + borrowDate);
-	                        System.out.println("반납예정일: " + returnDate);
+	                    // 먼저 borrow_info에 추가
+	                    insertBorrowInfo(conn, isbn, studentId, borrowDate, returnDate);
+	                    
+	                    // 그 다음 borrow_queue에 추가
+	                    String insertQueueSql = 
+	                        "INSERT INTO borrow_queue (ISBN, ID, borrow_date, borr_id) VALUES (?, ?, ?, ?)";
+	                    try (PreparedStatement insertQueueStmt = conn.prepareStatement(insertQueueSql)) {
+	                        insertQueueStmt.setString(1, isbn);
+	                        insertQueueStmt.setString(2, studentId);
+	                        insertQueueStmt.setInt(3, borrowDate);
+	                        insertQueueStmt.setInt(4, queueNumber);
+	                        insertQueueStmt.executeUpdate();
+	                        
+	                        System.out.println("대출 대기 등록 완료");
+	                        System.out.println("예약 순번: " + queueNumber);
+	                        System.out.println("예상 대출가능일: " + borrowDate);
 	                    }
 	                }
+	            } else {
+	                // 대출 가능한 경우
+	                borrowDate = Integer.parseInt(String.format("%tY%<tm%<td", new java.util.Date()));
+	                returnDate = borrowDate + 7;
+	                insertBorrowInfo(conn, isbn, studentId, borrowDate, returnDate);
+	                System.out.println("대출완료");
+	                System.out.println("대출일: " + borrowDate);
+	                System.out.println("반납예정일: " + returnDate);
 	            }
 	        }
 	    }
 	}
-	
+
+	private static void insertBorrowInfo(Connection conn, String isbn, String studentId, 
+	                                   int borrowDate, int returnDate) throws SQLException {
+	    String borrowSql = 
+	        "INSERT INTO borrow_info (ISBN, ID, borrow_date, return_date, name, number, course_id, sec_id, semester, year) " +
+	        "SELECT ?, ?, ?, ?, s.name, NULL, r.course_id, r.sec_id, r.semester, r.year " +
+	        "FROM student s, refers r " +
+	        "WHERE s.ID = ? AND r.ISBN = ?";
+	        
+	    try (PreparedStatement pstmt = conn.prepareStatement(borrowSql)) {
+	        pstmt.setString(1, isbn);
+	        pstmt.setString(2, studentId);
+	        pstmt.setInt(3, borrowDate);
+	        pstmt.setInt(4, returnDate);
+	        pstmt.setString(5, studentId);
+	        pstmt.setString(6, isbn);
+	        pstmt.executeUpdate();
+	    }
+	}
+
+	// 반납 처리 및 대기열 업데이트를 위한 메소드
+	private static void updateQueueAfterReturn(Connection conn, String isbn) throws SQLException {
+	    // 대기열에서 첫 번째 대기자 삭제
+	    String deleteFirstQueueSql = 
+	        "DELETE FROM borrow_queue WHERE ISBN = ? AND borr_id = 1";
+	        
+	    // 나머지 대기자들의 borr_id 감소
+	    String updateQueueSql = 
+	        "UPDATE borrow_queue SET borr_id = borr_id - 1 " +
+	        "WHERE ISBN = ? AND borr_id > 1";
+	        
+	    try (PreparedStatement deleteStmt = conn.prepareStatement(deleteFirstQueueSql);
+	         PreparedStatement updateStmt = conn.prepareStatement(updateQueueSql)) {
+	        
+	        deleteStmt.setString(1, isbn);
+	        deleteStmt.executeUpdate();
+	        
+	        updateStmt.setString(1, isbn);
+	        updateStmt.executeUpdate();
+	    }
+	}
 
 	// 3. 학과별 진로통계를 조회하는 부분
 	private static void searchCareerStatistics(Connection conn, Scanner scanner) throws SQLException {
