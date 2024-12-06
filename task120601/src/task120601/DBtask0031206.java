@@ -18,7 +18,7 @@ public class DBtask0031206 {
 				showMenu();
 
 				int choice = scanner.nextInt();
-				scanner.nextLine(); // 버퍼 비우기
+				scanner.nextLine();
 
 				switch (choice) {
 				case 1:
@@ -96,20 +96,18 @@ public class DBtask0031206 {
 		}
 	}
 	
+	//2. 책 빌리는 부분
 	private static void borrowBook(Connection conn, Scanner scanner) throws SQLException {
 	    System.out.print("학번: ");
 	    String studentId = scanner.nextLine();
 	    System.out.print("ISBN: ");
 	    String isbn = scanner.nextLine();
 
-	    // 1. 수강생 확인
+	    // 1. 수강생인지 확인하는 부분
 	    String checkEnrollmentSql = 
-	        "SELECT t.ID FROM takes t " + 
-	        "JOIN refers r ON t.course_id = r.course_id " +
-	        "AND t.sec_id = r.sec_id " + 
-	        "AND t.semester = r.semester " + 
-	        "AND t.year = r.year " +
-	        "WHERE t.ID = ? AND r.ISBN = ?";
+	        "SELECT t.ID FROM takes t JOIN refers ref ON t.course_id = ref.course_id AND t.sec_id = ref.sec_id " + 
+	        "AND t.semester = ref.semester AND t.year = ref.year " +
+	        "WHERE t.ID = ? AND ref.ISBN = ?";
 
 	    try (PreparedStatement pstmt = conn.prepareStatement(checkEnrollmentSql)) {
 	        pstmt.setString(1, studentId);
@@ -119,9 +117,10 @@ public class DBtask0031206 {
 	        if (!rs.next()) {
 	            System.out.println("대출불허: 해당 도서의 수강생이 아닙니다.");
 	            return;
+	            //리턴해버리기
 	        }
 
-	        // 2. 현재 도서의 대출 상태 확인
+	        // 2. ibsn 기준 현재 도서의 대출 상태 확인 - 대출중이라면 queue에 들어가야 하니까
 	        String checkCurrentBorrowSql = 
 	            "SELECT MAX(return_date) as latest_return FROM borrow_info WHERE ISBN = ?";
 	            
